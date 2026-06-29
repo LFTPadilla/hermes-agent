@@ -3445,9 +3445,9 @@ class GatewayRunner:
                     continue
 
                 platform_cfg = self.config.platforms.get(platform)
-                if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+                if platform_cfg is None or not platform_cfg.gateway_restart_notification:
                     logger.info(
-                        "Shutdown notification suppressed for active session: %s has gateway_restart_notification=false",
+                        "Shutdown notification suppressed for active session: %s has no explicit gateway_restart_notification=true",
                         platform_str,
                     )
                     continue
@@ -3488,9 +3488,9 @@ class GatewayRunner:
                 continue
 
             platform_cfg = self.config.platforms.get(platform)
-            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+            if platform_cfg is None or not platform_cfg.gateway_restart_notification:
                 logger.info(
-                    "Shutdown notification suppressed for home channel: %s has gateway_restart_notification=false",
+                    "Shutdown notification suppressed for home channel: %s has no explicit gateway_restart_notification=true",
                     platform.value,
                 )
                 continue
@@ -14488,9 +14488,9 @@ class GatewayRunner:
                 return None
 
             platform_cfg = self.config.platforms.get(platform)
-            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+            if platform_cfg is None or not platform_cfg.gateway_restart_notification:
                 logger.info(
-                    "Restart notification suppressed: %s has gateway_restart_notification=false",
+                    "Restart notification suppressed: %s has no explicit gateway_restart_notification=true",
                     platform_str,
                 )
                 return None
@@ -14547,9 +14547,9 @@ class GatewayRunner:
                 continue
 
             platform_cfg = self.config.platforms.get(platform)
-            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+            if platform_cfg is None or not platform_cfg.gateway_restart_notification:
                 logger.info(
-                    "Home-channel startup notification suppressed: %s has gateway_restart_notification=false",
+                    "Home-channel startup notification suppressed: %s has no explicit gateway_restart_notification=true",
                     platform.value,
                 )
                 continue

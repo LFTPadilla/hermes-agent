@@ -302,6 +302,21 @@ async def test_shutdown_notification_suppressed_when_flag_disabled():
 
 
 @pytest.mark.asyncio
+async def test_shutdown_notification_suppressed_when_platform_config_missing():
+    """Missing platform config must fail closed for client surfaces."""
+    from gateway.config import Platform
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms.pop(Platform.TELEGRAM)
+    session_key = "agent:main:telegram:dm:999"
+    runner._running_agents[session_key] = MagicMock()
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
 async def test_shutdown_notification_home_channel_suppressed_when_flag_disabled():
     """Home-channel ping during shutdown is muted when the flag is False."""
     from gateway.config import HomeChannel, Platform
