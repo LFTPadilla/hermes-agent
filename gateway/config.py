@@ -291,12 +291,11 @@ class PlatformConfig:
     # - "all": All chunks in multi-part replies thread to user's message
     reply_to_mode: str = "first"
 
-    # Whether the gateway is allowed to send "♻️ Gateway online" /
-    # "♻ Gateway restarted" lifecycle notifications on this platform.
-    # Default True preserves prior behavior. Set False on platforms used
-    # by end users (e.g. Slack) where operator-flavored restart pings are
-    # noise; keep True for back-channels where the operator wants them.
-    gateway_restart_notification: bool = True
+    # Whether the gateway is allowed to send "Gateway online/restarted/shutting
+    # down" lifecycle notifications on this platform. Default False keeps
+    # operator-flavored runtime events out of end-user chats; set True only on
+    # explicit operator/back-channel surfaces.
+    gateway_restart_notification: bool = False
 
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
@@ -336,7 +335,7 @@ class PlatformConfig:
             api_key=data.get("api_key"),
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
-            gateway_restart_notification=_coerce_bool(_grn, True),
+            gateway_restart_notification=_coerce_bool(_grn, False),
             extra=data.get("extra", {}),
         )
 
