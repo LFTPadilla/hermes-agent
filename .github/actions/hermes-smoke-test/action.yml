@@ -48,3 +48,22 @@ runs:
         docker run --rm \
           -v /tmp/hermes-test:/opt/data \
           "${{ inputs.image }}" dashboard --help
+
+    - name: Blackrack media helper mounts --help
+      shell: bash
+      run: |
+        set -euo pipefail
+        stt_host="${GITHUB_WORKSPACE}/Resources/AI/Skills/shared/http-stt"
+        tts_host="${GITHUB_WORKSPACE}/Resources/AI/Skills/shared/http-tts"
+        if [[ ! -x "${stt_host}/bin/stt" || ! -x "${tts_host}/bin/tts" ]]; then
+          echo "Blackrack media helpers not present in this checkout; skipping helper mount smoke"
+          exit 0
+        fi
+        mkdir -p /tmp/hermes-test/workspace/skills/shared
+        docker run --rm \
+          -v /tmp/hermes-test:/opt/data \
+          -v "${stt_host}:/opt/data/workspace/skills/shared/http-stt:ro" \
+          -v "${tts_host}:/opt/data/workspace/skills/shared/http-tts:ro" \
+          --entrypoint /bin/sh \
+          "${{ inputs.image }}" \
+          -lc '/opt/data/workspace/skills/shared/http-stt/bin/stt --help >/dev/null && /opt/data/workspace/skills/shared/http-tts/bin/tts --help >/dev/null'

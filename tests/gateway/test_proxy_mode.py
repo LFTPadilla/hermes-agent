@@ -304,7 +304,11 @@ class TestRunAgentViaProxy:
                         session_id="test",
                     )
 
-        assert "Proxy error (401)" in result["final_response"]
+        # Raw upstream error must NOT leak to the user (no error-filter on Hermes);
+        # a generic message is returned and the detail stays in logs.
+        assert "temporarily unavailable" in result["final_response"].lower()
+        assert "401" not in result["final_response"]
+        assert "invalid API key" not in result["final_response"]
         assert result["api_calls"] == 0
 
     @pytest.mark.asyncio
@@ -335,7 +339,9 @@ class TestRunAgentViaProxy:
                         session_id="test",
                     )
 
-        assert "Proxy connection error" in result["final_response"]
+        # Raw connection exception ("Connection refused") must not reach the user.
+        assert "temporarily unavailable" in result["final_response"].lower()
+        assert "Connection refused" not in result["final_response"]
 
     @pytest.mark.asyncio
     async def test_skips_tool_messages_in_history(self, monkeypatch):

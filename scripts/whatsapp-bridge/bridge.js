@@ -29,6 +29,7 @@ import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { createRateLimiter } from './rate-limit.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -51,6 +52,11 @@ const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cac
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
+// Per-sender inbound rate limiter (ENV-GATED, DEFAULT-OFF). See rate-limit.js.
+const rateLimiter = createRateLimiter(process.env);
+// Optional throttle notice text sent (at most once per window) when a sender
+// is dropped. Empty/unset → drop silently.
+const RATE_LIMIT_NOTICE = process.env.WHATSAPP_RATE_LIMIT_NOTICE || '';
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
@@ -310,6 +316,28 @@ async function startSocket() {
               senderId,
             }));
           } catch {}
+          continue;
+        }
+
+        // Per-sender inbound rate limit (ENV-GATED, DEFAULT-OFF). Keyed by the
+        // same canonical senderId the allowlist uses. On exceed: drop the
+        // inbound (do NOT process — skip before any media download) and
+        // optionally send ONE throttle notice per window.
+        const rl = rateLimiter.check(senderId);
+        if (!rl.allowed) {
+          try {
+            console.log(JSON.stringify({
+              event: 'ignored',
+              reason: 'rate_limit_exceeded',
+              chatId,
+              senderId,
+            }));
+          } catch {}
+          if (rl.notify && RATE_LIMIT_NOTICE && sock && connectionState === 'connected') {
+            sendWithTimeout(chatId, { text: RATE_LIMIT_NOTICE })
+              .then(trackSentMessageId)
+              .catch(() => {});
+          }
           continue;
         }
       }
@@ -700,6 +728,19 @@ app.get('/health', (req, res) => {
     status: connectionState,
     queueLength: messageQueue.length,
     uptime: process.uptime(),
+  });
+});
+
+// Bridge health — deterministic status for ops/relay consumers.
+// Returns: connected (bool), connectionState (string), rateLimitEnabled (bool),
+//          activeSenders (int — number of live rate-limit buckets, 0 when disabled).
+// No new deps: express is already loaded above.
+app.get('/bridge-health', (req, res) => {
+  res.json({
+    connected: connectionState === 'connected',
+    connectionState,
+    rateLimitEnabled: rateLimiter.enabled,
+    activeSenders: rateLimiter._buckets.size,
   });
 });
 

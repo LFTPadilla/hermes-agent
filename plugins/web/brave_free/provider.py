@@ -1,10 +1,15 @@
-"""Brave Search (free tier) — plugin form.
+"""Brave Search (Data for Search API) — plugin form.
 
 Subclasses :class:`agent.web_search_provider.WebSearchProvider` (the
 plugin-facing ABC). The legacy in-tree module
 ``tools.web_providers.brave_free`` was removed in the same commit that
 moved this code under ``plugins/``; this file is now the canonical
 implementation.
+
+Pricing note: Brave eliminated the free tier (2,000 queries/month) in
+February 2026. The API now ships with a $5/month usage credit and is
+metered at $5 per 1,000 requests beyond that. The ``brave-free`` provider
+name is kept only for backward compatibility with existing config keys.
 
 Config keys this provider responds to::
 
@@ -14,7 +19,7 @@ Config keys this provider responds to::
 
 Auth env var::
 
-    BRAVE_SEARCH_API_KEY=...    # https://brave.com/search/api/ (free tier)
+    BRAVE_SEARCH_API_KEY=...    # https://brave.com/search/api/
 """
 
 from __future__ import annotations
@@ -31,10 +36,13 @@ _BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 
 
 class BraveFreeWebSearchProvider(WebSearchProvider):
-    """Search-only Brave provider using the free-tier Data-for-Search API.
+    """Search-only Brave provider using the Data-for-Search API.
 
-    Free tier is 2,000 queries/month (1 qps). No content-extraction capability —
-    users pair this with Firecrawl/Tavily/Exa for ``web_extract``.
+    Brave's free tier (2,000 queries/month, 1 qps) was eliminated in
+    February 2026; the API now carries a $5/month usage credit and is
+    metered at $5 per 1,000 requests beyond it. No content-extraction
+    capability — users pair this with Firecrawl/Tavily/Exa for
+    ``web_extract``.
     """
 
     @property

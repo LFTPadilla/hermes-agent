@@ -8,6 +8,7 @@ import pytest
 
 import gateway.run as gateway_run
 from agent.i18n import t
+from gateway.config import PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
 from gateway.session import SessionEntry, build_session_key
@@ -343,6 +344,11 @@ async def test_shutdown_notification_uses_persisted_origin_for_colon_ids():
     source.platform = gateway_run.Platform.MATRIX
     session_key = build_session_key(source)
     runner._running_agents[session_key] = MagicMock()
+    runner.config.platforms[gateway_run.Platform.MATRIX] = PlatformConfig(
+        enabled=True,
+        token="***",
+        gateway_restart_notification=True,
+    )
     runner.session_store._entries = {
         session_key: SessionEntry(
             session_key=session_key,

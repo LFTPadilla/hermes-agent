@@ -38,6 +38,7 @@ import tempfile
 import threading
 import time
 import sqlite3
+import unicodedata
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
@@ -119,6 +120,69 @@ _GATEWAY_AUTH_ERROR_RE = re.compile(
     r"(provider\s+authentication\s+failed|incorrect\s+api\s+key|invalid\s+api\s+key|\b401\b)",
     re.IGNORECASE,
 )
+
+_NATURAL_CONTROL_COMMANDS = {
+    "new": {
+        "nuevo",
+        "nuevo chat",
+        "nueva conversacion",
+        "empezar de nuevo",
+        "empecemos de nuevo",
+        "empecemos otra vez",
+        "empecemos desde cero",
+        "arranquemos de nuevo",
+        "reiniciar conversacion",
+        "reinicia la conversacion",
+        "borra el contexto",
+        "borra esta conversacion",
+        "olvida lo anterior",
+        "olvida esta conversacion",
+        "start over",
+        "new chat",
+        "new conversation",
+    },
+    "help": {
+        "ayuda",
+        "ayudame",
+        "que puedes hacer",
+        "como te uso",
+        "como funciona esto",
+        "help",
+        "what can you do",
+    },
+    "stop": {
+        "para",
+        "detente",
+        "cancela",
+        "cancela eso",
+        "deja eso",
+        "no sigas",
+        "stop",
+        "cancel",
+    },
+}
+
+
+def _natural_control_command(text: str) -> Optional[str]:
+    """Map short, exact natural-language control phrases to slash commands.
+
+    This keeps Matrix/Element users from needing leading-slash commands, which
+    Element treats as client-side commands before Hermes can see the message.
+    The matcher is intentionally exact and short to avoid resetting a normal
+    conversation because the user merely mentioned one of these phrases.
+    """
+    raw = (text or "").strip()
+    if not raw or raw.startswith("/") or len(raw) > 80:
+        return None
+    normalized = unicodedata.normalize("NFKD", raw)
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    normalized = normalized.lower()
+    normalized = re.sub(r"[¿?¡!.,;:]+$", "", normalized).strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    for command, phrases in _NATURAL_CONTROL_COMMANDS.items():
+        if normalized in phrases:
+            return f"/{command}"
+    return None
 
 _GATEWAY_RATE_LIMIT_RE = re.compile(
     r"(rate\s+limit|rate-limited|\b429\b|quota|usage\s+limit)",
@@ -285,32 +349,53 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
-def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
-    """Sanitize final gateway replies before sending them to high-noise chats.
+# Raw tool-call JSON the model occasionally emits as plain text instead of a
+# structured call. Anchored to line start so legitimate markdown-fenced JSON,
+# user-pasted JSON, and pedagogical replies do not trigger (ported from the
+# OpenClaw error-filter RAW_TOOL_CALL_REGEXES, tightened 2026-05-27).
+_GATEWAY_RAW_TOOL_CALL_RES = [
+    re.compile(r'^\s*\{\s*"type"\s*:\s*"function"\s*,\s*"name"\s*:', re.M),
+    re.compile(r'^\s*\{\s*"name"\s*:\s*"cron"\s*,\s*"parameters"\s*:', re.M),
+    re.compile(r'^\s*\{\s*"name"\s*:\s*"\w+"\s*,\s*("parameters"|"arguments")\s*:', re.M),
+]
 
-    Telegram is Bob's mobile inbox, so it should receive concise, safe provider
-    failure categories instead of raw HTTP bodies, request IDs, or policy text.
-    Other platforms keep the existing behaviour for now.
+
+def _looks_like_raw_tool_call(text: str) -> bool:
+    body = str(text or "")
+    if len(body) > 2000:
+        return False
+    return any(r.search(body) for r in _GATEWAY_RAW_TOOL_CALL_RES)
+
+
+def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
+    """Sanitize final gateway replies before sending them to ANY platform.
+
+    Hermes has no OpenClaw-style outbound error-filter plugin, so this is the
+    single layer that keeps raw provider errors, request IDs, policy text,
+    secrets, and leaked tool-call JSON out of user-facing replies on every
+    surface (Matrix/WhatsApp/Discord/Telegram). The ``platform`` arg is kept
+    for call-site compatibility and future per-platform tuning.
     """
     if not text:
         return text
-    if _gateway_platform_value(platform) != "telegram":
-        return text
-
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
+    if _looks_like_raw_tool_call(redacted):
+        return "⚠️ I had a problem completing that action. Please try again."
     return redacted
 
 
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
-    """Filter/sanitize agent status callbacks before platform delivery."""
+    """Filter/sanitize agent status callbacks before delivery on any platform.
+
+    Applies to every surface (not Telegram-only) — Hermes' quiet-display
+    contract means noisy status, raw provider errors, and secrets must be kept
+    out of status callbacks on Matrix/WhatsApp/Discord too.
+    """
     text = str(message or "").strip()
     if not text:
         return None
-    if _gateway_platform_value(platform) != "telegram":
-        return text
-
     text = _redact_gateway_user_facing_secrets(text)
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
         return None
@@ -1588,16 +1673,18 @@ def _normalize_empty_agent_response(
                 "Use /compact to compress the conversation, or "
                 "/reset to start fresh."
             )
+        # Raw error_detail (provider/agent text) stays out of chat — it is in
+        # the gateway logs. error_detail is still used above for classification.
         return (
-            f"The request failed: {str(error_detail)[:300]}\n"
-            "Try again or use /reset to start a fresh session."
+            "⚠️ The request failed after retries. Please try again, or use "
+            "/reset to start a fresh session."
         )
 
     api_calls = int(agent_result.get("api_calls", 0) or 0)
     if api_calls > 0 and not agent_result.get("interrupted"):
         if agent_result.get("partial"):
-            err = agent_result.get("error", "processing incomplete")
-            return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
+            # Raw partial-error text kept out of chat (logs have detail).
+            return "⚠️ Processing stopped before completing. Please try again."
         return (
             "⚠️ Processing completed but no response was generated. "
             "This may be a transient error — try sending your message again."
@@ -6863,6 +6950,25 @@ class GatewayRunner:
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
+
+        if (
+            not is_internal
+            and event.message_type == MessageType.TEXT
+            and not event.is_command()
+        ):
+            natural_command = _natural_control_command(event.text)
+            if natural_command:
+                logger.info(
+                    "Natural control phrase mapped to %s for session source %s",
+                    natural_command,
+                    self._session_key_for_source(source),
+                )
+                event = dataclasses.replace(
+                    event,
+                    text=natural_command,
+                    message_type=MessageType.COMMAND,
+                )
+                source = event.source
         
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
@@ -7193,7 +7299,7 @@ class GatewayRunner:
                         accepted = running_agent.steer(steer_text)
                     except Exception as exc:
                         logger.warning("Steer failed for session %s: %s", _quick_key, exc)
-                        return f"⚠️ Steer failed: {exc}"
+                        return f"⚠️ Steer failed: {_redact_gateway_user_facing_secrets(str(exc))}"
                     if accepted:
                         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
                         return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
@@ -9225,9 +9331,11 @@ class GatewayRunner:
                     )
                 elif status_code == 400:
                     status_hint = " The request was rejected by the API."
+            # error_detail (raw str(e)) is intentionally NOT surfaced to the
+            # user — it can carry provider bodies, internal hosts, or secrets.
+            # The full exception is already in logs via logger.exception above.
             return (
                 f"Sorry, I encountered an error ({error_type}).\n"
-                f"{error_detail}\n"
                 f"{status_hint}"
                 "Try again or use /reset to start a fresh session."
             )
@@ -11243,7 +11351,7 @@ class GatewayRunner:
                     "Voice dependencies are missing (PyNaCl / davey). "
                     f"Install with: `{sys.executable} -m pip install PyNaCl`"
                 )
-            return f"Failed to join voice channel: {e}"
+            return f"Failed to join voice channel: {_redact_gateway_user_facing_secrets(str(e))}"
 
         if success:
             adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
@@ -12692,7 +12800,7 @@ class GatewayRunner:
             self._session_db.disable_telegram_topic_mode(chat_id=chat_id)
         except Exception as exc:
             logger.exception("Failed to disable Telegram topic mode")
-            return f"Failed to disable topic mode: {exc}"
+            return f"Failed to disable topic mode: {_redact_gateway_user_facing_secrets(str(exc))}"
         # Reset per-chat debounce state so the user doesn't see a stale
         # cooldown on the next activation.
         for attr in ("_telegram_lobby_reminder_ts", "_telegram_capability_hint_ts"):
@@ -15787,7 +15895,7 @@ class GatewayRunner:
                             resp.status, proxy_url, error_text[:500],
                         )
                         return {
-                            "final_response": f"⚠️ Proxy error ({resp.status}): {error_text[:300]}",
+                            "final_response": "⚠️ The model service is temporarily unavailable. Please try again in a moment.",
                             "messages": [],
                             "api_calls": 0,
                             "tools": [],
@@ -15843,7 +15951,7 @@ class GatewayRunner:
             logger.error("Proxy connection error to %s: %s", proxy_url, e)
             if not full_response:
                 return {
-                    "final_response": f"⚠️ Proxy connection error: {e}",
+                    "final_response": "⚠️ The model service is temporarily unavailable. Please try again in a moment.",
                     "messages": [],
                     "api_calls": 0,
                     "tools": [],
@@ -16631,8 +16739,9 @@ class GatewayRunner:
                     model, runtime_kwargs.get("provider"), session_key or "",
                 )
             except Exception as exc:
+                logger.warning("run_agent provider/auth resolution failed: %s", exc)
                 return {
-                    "final_response": f"⚠️ Provider authentication failed: {exc}",
+                    "final_response": "⚠️ Provider authentication failed. Check the configured credentials; details are in the gateway logs.",
                     "messages": [],
                     "api_calls": 0,
                     "tools": [],

@@ -888,8 +888,19 @@ def load_gateway_config() -> GatewayConfig:
                 for entry in _pr.all_entries():
                     if entry.apply_yaml_config_fn is None:
                         continue
-                    platform_cfg = yaml_cfg.get(entry.name)
-                    if not isinstance(platform_cfg, dict):
+                    platform_cfg = {}
+                    legacy_platforms = yaml_cfg.get("platforms")
+                    if isinstance(legacy_platforms, dict):
+                        legacy_cfg = legacy_platforms.get(entry.name)
+                        if isinstance(legacy_cfg, dict):
+                            platform_cfg.update(legacy_cfg)
+                            legacy_extra = legacy_cfg.get("extra")
+                            if isinstance(legacy_extra, dict):
+                                platform_cfg.update(legacy_extra)
+                    top_level_cfg = yaml_cfg.get(entry.name)
+                    if isinstance(top_level_cfg, dict):
+                        platform_cfg.update(top_level_cfg)
+                    if not platform_cfg:
                         continue
                     try:
                         seeded = entry.apply_yaml_config_fn(yaml_cfg, platform_cfg)
@@ -1109,6 +1120,8 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["MATRIX_ALLOWED_ROOMS"] = str(ar)
                 if "auto_thread" in matrix_cfg and not os.getenv("MATRIX_AUTO_THREAD"):
                     os.environ["MATRIX_AUTO_THREAD"] = str(matrix_cfg["auto_thread"]).lower()
+                if "dm_auto_thread" in matrix_cfg and not os.getenv("MATRIX_DM_AUTO_THREAD"):
+                    os.environ["MATRIX_DM_AUTO_THREAD"] = str(matrix_cfg["dm_auto_thread"]).lower()
                 if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
                     os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
 
