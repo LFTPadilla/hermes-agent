@@ -9287,6 +9287,17 @@ class GatewayRunner:
             except Exception:
                 pass
             logger.exception("Agent error in session %s", session_key)
+            # 2026-07-06: this is where a whole turn fails after every inner retry
+            # is exhausted — the exact shape of the "tool call failed" incident that
+            # started this investigation (client got a generic error reply, nobody
+            # else ever found out). Same safe/inert-by-default reporter as the
+            # top-level crash handler in main(), just severity=warning since the
+            # process itself is still alive. See gateway/crash_report.py.
+            try:
+                from gateway.crash_report import report_crash as _report_turn_failure
+                _report_turn_failure(e, context=f"turn:{session_key}", severity="warning", kind="turn-failed")
+            except Exception:
+                pass
             error_type = type(e).__name__
             error_detail = str(e)[:300] if str(e) else "no details available"
             status_hint = ""

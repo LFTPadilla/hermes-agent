@@ -46,8 +46,21 @@ def _client_slug() -> str:
     )
 
 
-def report_crash(exc: BaseException, *, context: str = "main") -> None:
-    """Best-effort: POST a critical alert describing an uncaught exception.
+def report_crash(
+    exc: BaseException,
+    *,
+    context: str = "main",
+    severity: str = "critical",
+    kind: str = "crash",
+) -> None:
+    """Best-effort: POST an alert describing an uncaught/handled exception.
+
+    `severity`/`kind` let callers distinguish a full process crash (critical,
+    the process is about to die) from a recovered-but-still-bad event like a
+    whole agent turn failing after retries were exhausted (warning, the
+    process stays up) — same transport, same safety guarantees, different
+    dedup key so the two don't collide in the triage system's per-key dedup
+    window.
 
     Safe to call from any exception handler. Never raises. No-ops silently if
     CRASH_REPORT_URL/OPS_ALERT_TOKEN aren't configured for this pod.
@@ -61,11 +74,11 @@ def report_crash(exc: BaseException, *, context: str = "main") -> None:
         slug = _client_slug()
         tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))[-3000:]
         payload = {
-            "source": f"gateway-crash:{slug}",
-            "severity": "critical",
-            "summary": f"Hermes gateway ({slug}) crashed in {context}: {type(exc).__name__}: {exc}"[:500],
+            "source": f"gateway-{kind}:{slug}",
+            "severity": severity,
+            "summary": f"Hermes gateway ({slug}) {kind} in {context}: {type(exc).__name__}: {exc}"[:500],
             "details": tb,
-            "key": f"gateway-crash-{slug}",
+            "key": f"gateway-{kind}-{slug}",
         }
         req = urllib.request.Request(
             url,
