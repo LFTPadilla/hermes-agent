@@ -328,6 +328,22 @@ class TestUpdateJob:
         assert get_job(job["id"]) is not None
         assert get_job("../escape") is None
 
+    def test_lookups_tolerate_sibling_job_missing_id(self, tmp_cron_dir):
+        """A malformed sibling job with no 'id' key must not break lookups
+        for other jobs in the same store. Regression for issue #139: several
+        CRUD functions iterated jobs with a bare `job["id"]` comparison,
+        which raised KeyError as soon as any job in jobs.json lacked the
+        field — even one unrelated to the job being looked up."""
+        job = create_job(prompt="Target job", schedule="every 1h")
+        jobs = load_jobs()
+        jobs.append({"name": "Malformed sibling, no id", "enabled": True})
+        save_jobs(jobs)
+
+        assert get_job(job["id"])["prompt"] == "Target job"
+        updated = update_job(job["id"], {"name": "Renamed"})
+        assert updated is not None
+        assert updated["name"] == "Renamed"
+
 
 class TestPauseResumeJob:
     def test_pause_sets_state(self, tmp_cron_dir):
@@ -435,10 +451,36 @@ class TestResolveJobRef:
         with pytest.raises(AmbiguousJobReference):
             remove_job("dup")
 
+    def test_resolve_tolerates_sibling_job_missing_id(self, tmp_cron_dir):
+        """A malformed sibling job with no 'id' must not break resolution
+        of other jobs by ID or name (issue #139)."""
+        from cron.jobs import resolve_job_ref
+
+        job = create_job(prompt="A", schedule="1h", name="alpha")
+        jobs = load_jobs()
+        jobs.append({"name": "Malformed sibling, no id", "enabled": True})
+        save_jobs(jobs)
+
+        assert resolve_job_ref(job["id"])["id"] == job["id"]
+        assert resolve_job_ref("alpha")["id"] == job["id"]
+
 
 class TestMarkJobRun:
     def test_increments_completed(self, tmp_cron_dir):
         job = create_job(prompt="Test", schedule="every 1h")
+        mark_job_run(job["id"], success=True)
+        updated = get_job(job["id"])
+        assert updated["repeat"]["completed"] == 1
+        assert updated["last_status"] == "ok"
+
+    def test_tolerates_sibling_job_missing_id(self, tmp_cron_dir):
+        """A malformed sibling job with no 'id' must not crash mark_job_run
+        while updating an unrelated job (issue #139)."""
+        job = create_job(prompt="Test", schedule="every 1h")
+        jobs = load_jobs()
+        jobs.append({"name": "Malformed sibling, no id", "enabled": True})
+        save_jobs(jobs)
+
         mark_job_run(job["id"], success=True)
         updated = get_job(job["id"])
         assert updated["repeat"]["completed"] == 1
@@ -640,6 +682,20 @@ class TestAdvanceNextRun:
     def test_nonexistent_job_returns_false(self, tmp_cron_dir):
         result = advance_next_run("nonexistent-id")
         assert result is False
+
+    def test_tolerates_sibling_job_missing_id(self, tmp_cron_dir):
+        """A malformed sibling job with no 'id' must not crash advance_next_run
+        while advancing an unrelated job (issue #139)."""
+        job = create_job(prompt="Recurring check", schedule="every 1h")
+        jobs = load_jobs()
+        for j in jobs:
+            if j["id"] == job["id"]:
+                j["next_run_at"] = (datetime.now() - timedelta(minutes=5)).isoformat()
+        jobs.append({"name": "Malformed sibling, no id", "enabled": True})
+        save_jobs(jobs)
+
+        result = advance_next_run(job["id"])
+        assert result is True
 
     def test_already_future_stays_future(self, tmp_cron_dir):
         """If next_run_at is already in the future, advance keeps it in the future (no harm)."""
@@ -850,6 +906,57 @@ class TestGetDueJobs:
         if recovered_dt.tzinfo is None:
             recovered_dt = recovered_dt.replace(tzinfo=timezone.utc)
         assert recovered_dt > now
+
+    def test_enabled_job_missing_id_is_skipped_not_fatal(self, tmp_cron_dir, caplog):
+        """A due, enabled job with no 'id' key (legacy/hand-edited jobs.json)
+        must be skipped with a visible warning, never raise KeyError and
+        never take down the rest of the tick. Regression test for issue #139:
+        `_get_due_jobs_locked` used to do bare `job["id"]` / `rj["id"]`
+        lookups, so a single malformed job crashed get_due_jobs() for the
+        entire lane."""
+        good = create_job(prompt="Healthy job", schedule="every 1h")
+        jobs = load_jobs()
+        for j in jobs:
+            if j["id"] == good["id"]:
+                j["next_run_at"] = (datetime.now() - timedelta(minutes=5)).isoformat()
+        # Insert a due, enabled job with no "id" key at all.
+        jobs.append({
+            "name": "Legacy job without id",
+            "prompt": "...",
+            "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+            "schedule_display": "every 60m",
+            "repeat": {"times": None, "completed": 0},
+            "enabled": True,
+            "state": "scheduled",
+            "next_run_at": (datetime.now() - timedelta(minutes=5)).isoformat(),
+            "last_run_at": None,
+            "deliver": "local",
+            "origin": None,
+        })
+        save_jobs(jobs)
+
+        with caplog.at_level("WARNING"):
+            due = get_due_jobs()
+
+        # The healthy job still fires; the id-less job is skipped, not fatal.
+        assert [j["id"] for j in due] == [good["id"]]
+        assert any(
+            "missing 'id'" in record.message and "Legacy job without id" in record.message
+            for record in caplog.records
+        )
+
+    def test_get_due_jobs_missing_id_job_disabled_still_safe(self, tmp_cron_dir):
+        """Disabled jobs without 'id' are skipped by the enabled-check before
+        ever reaching an `["id"]` lookup — still must not raise."""
+        jobs = [{
+            "name": "Disabled legacy job without id",
+            "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+            "enabled": False,
+            "next_run_at": (datetime.now() - timedelta(minutes=5)).isoformat(),
+        }]
+        save_jobs(jobs)
+
+        assert get_due_jobs() == []
 
 
 class TestEnabledToolsets:

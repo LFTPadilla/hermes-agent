@@ -697,7 +697,7 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     """Get a job by ID."""
     jobs = load_jobs()
     for job in jobs:
-        if job["id"] == job_id:
+        if job.get("id") == job_id:
             return _normalize_job_record(job)
     return None
 
@@ -727,7 +727,7 @@ def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
         return None
     jobs = load_jobs()
     for job in jobs:
-        if job["id"] == ref:
+        if job.get("id") == ref:
             return _normalize_job_record(job)
     ref_lower = ref.lower()
     name_matches = [j for j in jobs if (j.get("name") or "").lower() == ref_lower]
@@ -761,7 +761,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
     jobs = load_jobs()
     for i, job in enumerate(jobs):
-        if job["id"] != job_id:
+        if job.get("id") != job_id:
             continue
 
         # Validate / normalize workdir if present in updates.  Empty string or
@@ -874,7 +874,7 @@ def remove_job(job_id: str) -> bool:
     canonical_id = job["id"]
     jobs = load_jobs()
     original_len = len(jobs)
-    jobs = [j for j in jobs if j["id"] != canonical_id]
+    jobs = [j for j in jobs if j.get("id") != canonical_id]
     if len(jobs) < original_len:
         # Resolve the output dir BEFORE saving so a legacy unsafe ID (e.g.
         # left over from before the create-time guard) fails closed without
@@ -902,7 +902,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
     with _jobs_file_lock:
         jobs = load_jobs()
         for i, job in enumerate(jobs):
-            if job["id"] == job_id:
+            if job.get("id") == job_id:
                 now = _hermes_now().isoformat()
                 job["last_run_at"] = now
                 job["last_status"] = "ok" if success else "error"
@@ -946,7 +946,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                             "Job '%s' (%s) could not compute next_run_at; "
                             "leaving enabled and marking state=error so the "
                             "job is not silently disabled.",
-                            job.get("name", job["id"]),
+                            job.get("name", job.get("id")),
                             kind,
                         )
                     else:
@@ -976,7 +976,7 @@ def advance_next_run(job_id: str) -> bool:
     with _jobs_file_lock:
         jobs = load_jobs()
         for job in jobs:
-            if job["id"] == job_id:
+            if job.get("id") == job_id:
                 kind = job.get("schedule", {}).get("kind")
                 if kind not in {"cron", "interval"}:
                     return False
@@ -1014,6 +1014,19 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
         if not job.get("enabled", True):
             continue
 
+        # A job without an "id" (legacy/hand-edited jobs.json, migration
+        # gaps) must never take down the whole tick. Skip it loudly — via
+        # warning, not debug — so the operator notices instead of the
+        # lane's cron silently going dead. See issue #139.
+        if not job.get("id"):
+            logger.warning(
+                "Cron job missing 'id', skipping — name=%r. This job will "
+                "never run until it is repaired (e.g. re-create it or "
+                "backfill an 'id' in jobs.json).",
+                job.get("name", "<unnamed>"),
+            )
+            continue
+
         next_run = job.get("next_run_at")
         if not next_run:
             schedule = job.get("schedule", {})
@@ -1044,12 +1057,12 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             next_run = recovered_next
             logger.info(
                 "Job '%s' had no next_run_at; recovering %s run at %s",
-                job.get("name", job["id"]),
+                job.get("name", job.get("id")),
                 recovery_kind,
                 recovered_next,
             )
             for rj in raw_jobs:
-                if rj["id"] == job["id"]:
+                if rj.get("id") == job.get("id"):
                     rj["next_run_at"] = recovered_next
                     needs_save = True
                     break
@@ -1071,14 +1084,14 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     logger.info(
                         "Job '%s' missed its scheduled time (%s, grace=%ds). "
                         "Fast-forwarding to next run: %s",
-                        job.get("name", job["id"]),
+                        job.get("name", job.get("id")),
                         next_run,
                         grace,
                         new_next,
                     )
                     # Update the job in storage
                     for rj in raw_jobs:
-                        if rj["id"] == job["id"]:
+                        if rj.get("id") == job.get("id"):
                             rj["next_run_at"] = new_next
                             needs_save = True
                             break
