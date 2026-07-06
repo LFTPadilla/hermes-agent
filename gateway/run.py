@@ -9287,6 +9287,17 @@ class GatewayRunner:
             except Exception:
                 pass
             logger.exception("Agent error in session %s", session_key)
+            # 2026-07-06: this is where a whole turn fails after every inner retry
+            # is exhausted — the exact shape of the "tool call failed" incident that
+            # started this investigation (client got a generic error reply, nobody
+            # else ever found out). Same safe/inert-by-default reporter as the
+            # top-level crash handler in main(), just severity=warning since the
+            # process itself is still alive. See gateway/crash_report.py.
+            try:
+                from gateway.crash_report import report_crash as _report_turn_failure
+                _report_turn_failure(e, context=f"turn:{session_key}", severity="warning", kind="turn-failed")
+            except Exception:
+                pass
             error_type = type(e).__name__
             error_detail = str(e)[:300] if str(e) else "no details available"
             status_hint = ""
@@ -18949,6 +18960,15 @@ def main():
     except Exception:
         pass
 
+    # 2026-07-06: broader safety net alongside the try/except around start_gateway()
+    # below — catches uncaught exceptions in argument parsing / config loading too.
+    # Safe no-op until CRASH_REPORT_URL is configured (see gateway/crash_report.py).
+    try:
+        from gateway.crash_report import install_excepthook
+        install_excepthook()
+    except Exception:
+        pass
+
     import argparse
     
     parser = argparse.ArgumentParser(description="Hermes Gateway - Multi-platform messaging")
@@ -18966,7 +18986,19 @@ def main():
     
     # Run the gateway - exit with code 1 if no platforms connected,
     # so systemd Restart=on-failure will retry on transient errors (e.g. DNS)
-    success = asyncio.run(start_gateway(config))
+    #
+    # 2026-07-06: an uncaught exception here previously just printed a traceback
+    # and died — no human was ever notified (see gateway/crash_report.py for the
+    # full rationale). report_crash() is a safe no-op until CRASH_REPORT_URL is
+    # explicitly wired for this client, so this changes nothing by default.
+    try:
+        success = asyncio.run(start_gateway(config))
+    except BaseException as exc:  # noqa: BLE001 — must catch everything, including
+        # asyncio internals raising things that aren't plain Exception, to report
+        # before re-raising unchanged.
+        from gateway.crash_report import report_crash
+        report_crash(exc, context="start_gateway")
+        raise
     if not success:
         sys.exit(1)
 
