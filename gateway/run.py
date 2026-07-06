@@ -87,6 +87,17 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_GATEWAY_INTERNAL_STATUS_RE = re.compile(
+    r"("  # internal tool/status breadcrumbs; never customer-facing
+    r"^\s*┊"
+    r"|^\s*(?:🧠\s*)?memory\s*[: ]"
+    r"|\+memory\s*:"
+    r"|</?tool_call>"
+    r"|^\s*(?:tool|tool_call|function_call|result)\s*:"
+    r")",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"("  # infrastructure/provider error preambles, not ordinary assistant prose
     r"api\s+(?:call\s+)?failed"
@@ -396,7 +407,20 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     text = str(message or "").strip()
     if not text:
         return None
+    event_key = str(event_type or "").strip().lower().replace("_", ".")
+    if event_key in {
+        "memory",
+        "tool",
+        "tool.progress",
+        "tool.started",
+        "tool.finished",
+        "pre.tool.call",
+        "post.tool.call",
+    }:
+        return None
     text = _redact_gateway_user_facing_secrets(text)
+    if _GATEWAY_INTERNAL_STATUS_RE.search(text) or _looks_like_raw_tool_call(text):
+        return None
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
         return None
     if _looks_like_gateway_provider_error(text):

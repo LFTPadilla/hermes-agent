@@ -31,6 +31,14 @@ def test_status_noise_filtered_on_all_platforms():
         assert _prepare_gateway_status_message(platform, "lifecycle", noisy) is None
 
 
+def test_memory_tool_status_filtered_on_all_platforms():
+    """Memory/tool breadcrumbs are internal and should never reach clients."""
+    leaked = '┊ 🧠 memory    +memory: "## Catálogo Odoo — presen..."  0.1s'
+    for platform in (Platform.DISCORD, "matrix", "whatsapp", "local"):
+        assert _prepare_gateway_status_message(platform, "lifecycle", leaked) is None
+        assert _prepare_gateway_status_message(platform, "memory", "+memory: raw note") is None
+
+
 def test_non_telegram_final_response_sanitizes_provider_errors():
     """A raw provider error must be rewritten on non-Telegram platforms too."""
     raw = (
