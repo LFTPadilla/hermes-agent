@@ -243,10 +243,14 @@ class TestPlatformDefaults:
         # default on Telegram (mobile chat is cramped enough without
         # "iteration 21/60" debug detail).
         assert resolve_display_setting({}, "telegram", "busy_ack_detail") is False
+        assert resolve_display_setting({}, "telegram", "busy_ack_enabled") is True
+        assert resolve_display_setting({}, "telegram", "lifecycle_notifications_enabled") is True
         # Discord keeps all of these on (desktop-first, more vertical space).
         assert resolve_display_setting({}, "discord", "interim_assistant_messages") is True
         assert resolve_display_setting({}, "discord", "long_running_notifications") is True
         assert resolve_display_setting({}, "discord", "busy_ack_detail") is True
+        assert resolve_display_setting({}, "discord", "busy_ack_enabled") is True
+        assert resolve_display_setting({}, "discord", "lifecycle_notifications_enabled") is True
 
     def test_telegram_mobile_chatter_can_opt_in(self):
         """Per-platform config can re-enable Telegram busy-ack detail
@@ -260,6 +264,8 @@ class TestPlatformDefaults:
                         "interim_assistant_messages": False,
                         "long_running_notifications": False,
                         "busy_ack_detail": "on",
+                        "busy_ack_enabled": "off",
+                        "lifecycle_notifications_enabled": "false",
                     }
                 }
             }
@@ -267,6 +273,8 @@ class TestPlatformDefaults:
         assert resolve_display_setting(config, "telegram", "interim_assistant_messages") is False
         assert resolve_display_setting(config, "telegram", "long_running_notifications") is False
         assert resolve_display_setting(config, "telegram", "busy_ack_detail") is True
+        assert resolve_display_setting(config, "telegram", "busy_ack_enabled") is False
+        assert resolve_display_setting(config, "telegram", "lifecycle_notifications_enabled") is False
 
 
 # ---------------------------------------------------------------------------

@@ -1031,6 +1031,10 @@ if _config_path.exists():
                 os.environ["HERMES_GATEWAY_BUSY_TEXT_MODE"] = str(_display_cfg["busy_text_mode"])
             if "busy_ack_enabled" in _display_cfg:
                 os.environ["HERMES_GATEWAY_BUSY_ACK_ENABLED"] = str(_display_cfg["busy_ack_enabled"])
+            if "lifecycle_notifications_enabled" in _display_cfg:
+                os.environ["HERMES_GATEWAY_LIFECYCLE_NOTIFICATIONS_ENABLED"] = str(
+                    _display_cfg["lifecycle_notifications_enabled"]
+                )
         # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
         _tz_cfg = _cfg.get("timezone", "")
         if _tz_cfg and isinstance(_tz_cfg, str):
@@ -1506,6 +1510,33 @@ def _check_unavailable_skill(command_name: str) -> str | None:
 def _platform_config_key(platform: "Platform") -> str:
     """Map a Platform enum to its config.yaml key (LOCAL→"cli", rest→enum value)."""
     return "cli" if platform == Platform.LOCAL else platform.value
+
+
+def _resolve_gateway_display_bool(
+    platform_key: str,
+    setting: str,
+    *,
+    env_name: Optional[str] = None,
+    default: bool = True,
+) -> bool:
+    """Resolve a gateway display boolean with env override support."""
+    if env_name:
+        env_value = os.getenv(env_name)
+        if env_value is not None:
+            return is_truthy_value(env_value, default=default)
+    try:
+        from gateway.display_config import resolve_display_setting
+
+        return bool(
+            resolve_display_setting(
+                _load_gateway_config(),
+                platform_key,
+                setting,
+                default,
+            )
+        )
+    except Exception:
+        return default
 
 
 def _teams_pipeline_plugin_enabled() -> bool:
@@ -3333,7 +3364,15 @@ class GatewayRunner:
         # Check if busy ack is disabled — skip sending but still process the input.
         # Placed before debounce so we don't stamp a "last ack" timestamp that was
         # never actually delivered.
-        busy_ack_enabled = os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() == "true"
+        from gateway.display_config import resolve_display_setting
+        user_config = _load_gateway_config()
+        platform_key = _platform_config_key(event.source.platform)
+        busy_ack_enabled = _resolve_gateway_display_bool(
+            platform_key,
+            "busy_ack_enabled",
+            env_name="HERMES_GATEWAY_BUSY_ACK_ENABLED",
+            default=True,
+        )
         if not busy_ack_enabled:
             logger.debug("Busy ack suppressed for session %s", session_key)
             return True  # input still processed, just no ack sent
@@ -3351,12 +3390,11 @@ class GatewayRunner:
         # Build a status-rich acknowledgment. Mobile chat defaults keep this
         # terse; detailed iteration/tool state is still available in logs and
         # can be opted in per platform via display.platforms.<platform>.busy_ack_detail.
-        from gateway.display_config import resolve_display_setting
         status_parts = []
         busy_ack_detail_enabled = bool(
             resolve_display_setting(
-                _load_gateway_config(),
-                _platform_config_key(event.source.platform),
+                user_config,
+                platform_key,
                 "busy_ack_detail",
                 True,
             )
@@ -3555,6 +3593,18 @@ class GatewayRunner:
                 if not adapter:
                     continue
 
+                if not _resolve_gateway_display_bool(
+                    _platform_config_key(platform),
+                    "lifecycle_notifications_enabled",
+                    env_name="HERMES_GATEWAY_LIFECYCLE_NOTIFICATIONS_ENABLED",
+                    default=True,
+                ):
+                    logger.info(
+                        "Shutdown notification suppressed for active session: %s has display.lifecycle_notifications_enabled=false",
+                        platform_str,
+                    )
+                    continue
+
                 platform_cfg = self.config.platforms.get(platform)
                 if platform_cfg is None or not platform_cfg.gateway_restart_notification:
                     logger.info(
@@ -3599,6 +3649,18 @@ class GatewayRunner:
                 continue
 
             platform_cfg = self.config.platforms.get(platform)
+            if not _resolve_gateway_display_bool(
+                _platform_config_key(platform),
+                "lifecycle_notifications_enabled",
+                env_name="HERMES_GATEWAY_LIFECYCLE_NOTIFICATIONS_ENABLED",
+                default=True,
+            ):
+                logger.info(
+                    "Shutdown notification suppressed for home channel: %s has display.lifecycle_notifications_enabled=false",
+                    platform.value,
+                )
+                continue
+
             if platform_cfg is None or not platform_cfg.gateway_restart_notification:
                 logger.info(
                     "Shutdown notification suppressed for home channel: %s has no explicit gateway_restart_notification=true",
@@ -8204,6 +8266,10 @@ class GatewayRunner:
                 parts = basename.split("_", 2)
                 display_name = parts[2] if len(parts) >= 3 else basename
                 display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+                _display_lower = display_name.lower()
+                _is_spreadsheet = _display_lower.endswith((".xls", ".xlsx", ".xlsm", ".xlsb", ".csv"))
+                _empty_placeholder = "(The user sent a message with no text content)"
+                _message_was_empty_placeholder = message_text.strip() == _empty_placeholder
 
                 # Translate host cache path to in-container path if running under Docker backend.
                 # This ensures the agent receives a path it can open inside its sandbox, as the
@@ -8217,12 +8283,26 @@ class GatewayRunner:
                         f"The file is also saved at: {agent_path}]"
                     )
                 else:
-                    context_note = (
-                        f"[The user sent a document: '{display_name}'. "
-                        f"The file is saved at: {agent_path}. "
-                        f"Ask the user what they'd like you to do with it.]"
-                    )
-                message_text = f"{context_note}\n\n{message_text}"
+                    if _is_spreadsheet:
+                        context_note = (
+                            f"[The user sent a spreadsheet document: '{display_name}'. "
+                            f"The file is saved at: {agent_path}. "
+                            "Open and inspect this spreadsheet now using the excel-xlsx skill "
+                            "or spreadsheet tools, then answer from its contents. "
+                            "Do not say the message was empty.]"
+                        )
+                    else:
+                        context_note = (
+                            f"[The user sent a document: '{display_name}'. "
+                            f"The file is saved at: {agent_path}. "
+                            "If no separate text was provided, treat the upload itself as "
+                            "the user's request to process or summarize the file. "
+                            "Do not say the message was empty.]"
+                        )
+                if _message_was_empty_placeholder:
+                    message_text = context_note
+                else:
+                    message_text = f"{context_note}\n\n{message_text}"
 
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer — even when the quoted text
@@ -14631,6 +14711,18 @@ class GatewayRunner:
                 return None
 
             platform_cfg = self.config.platforms.get(platform)
+            if not _resolve_gateway_display_bool(
+                _platform_config_key(platform),
+                "lifecycle_notifications_enabled",
+                env_name="HERMES_GATEWAY_LIFECYCLE_NOTIFICATIONS_ENABLED",
+                default=True,
+            ):
+                logger.info(
+                    "Restart notification suppressed: %s has display.lifecycle_notifications_enabled=false",
+                    platform_str,
+                )
+                return None
+
             if platform_cfg is None or not platform_cfg.gateway_restart_notification:
                 logger.info(
                     "Restart notification suppressed: %s has no explicit gateway_restart_notification=true",
@@ -14690,6 +14782,18 @@ class GatewayRunner:
                 continue
 
             platform_cfg = self.config.platforms.get(platform)
+            if not _resolve_gateway_display_bool(
+                _platform_config_key(platform),
+                "lifecycle_notifications_enabled",
+                env_name="HERMES_GATEWAY_LIFECYCLE_NOTIFICATIONS_ENABLED",
+                default=True,
+            ):
+                logger.info(
+                    "Home-channel startup notification suppressed: %s has display.lifecycle_notifications_enabled=false",
+                    platform.value,
+                )
+                continue
+
             if platform_cfg is None or not platform_cfg.gateway_restart_notification:
                 logger.info(
                     "Home-channel startup notification suppressed: %s has no explicit gateway_restart_notification=true",

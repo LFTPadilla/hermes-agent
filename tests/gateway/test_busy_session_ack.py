@@ -502,6 +502,35 @@ class TestBusySessionAck:
         result = await runner._handle_active_session_busy_message(event, sk)
         assert result is False  # not handled, let default path try
 
+    @pytest.mark.asyncio
+    async def test_busy_ack_disabled_processes_input_without_client_message(self, monkeypatch):
+        """display.busy_ack_enabled=false suppresses the client-facing ack only."""
+        import gateway.run as _gr
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {"display": {"busy_ack_enabled": False}},
+        )
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="otra cosa")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        agent.interrupt.assert_called_once_with("otra cosa")
+        adapter._send_with_retry.assert_not_called()
+
 
 class TestBusySessionOnboardingHint:
     """First-touch hint appended to the busy-ack the first time it fires."""

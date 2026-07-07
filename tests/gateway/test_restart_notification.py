@@ -669,3 +669,25 @@ async def test_shutdown_notifications_use_cached_live_thread_source_when_origin_
         "⚠️ Gateway shutting down — Your current task will be interrupted.",
         metadata={"thread_id": "topic-7"},
     )
+
+@pytest.mark.asyncio
+async def test_shutdown_notifications_suppressed_by_display_policy(monkeypatch):
+    monkeypatch.delenv("HERMES_GATEWAY_LIFECYCLE_NOTIFICATIONS_ENABLED", raising=False)
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {"lifecycle_notifications_enabled": False}},
+    )
+
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="parent-42", chat_type="group", thread_id="topic-7")
+    session_key = build_session_key(source)
+
+    runner._running_agents[session_key] = object()
+    runner.session_store._entries[session_key] = MagicMock(origin=None)
+    runner._cache_session_source(session_key, source)
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="shutdown"))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_not_awaited()

@@ -3632,7 +3632,7 @@ class DiscordAdapter(BasePlatformAdapter):
             if isinstance(configured, str):
                 return configured.lower() not in {"false", "0", "no", "off", ""}
             return bool(configured)
-        return os.getenv("DISCORD_ALLOW_ANY_ATTACHMENT", "false").lower() in {"true", "1", "yes", "on"}
+        return os.getenv("DISCORD_ALLOW_ANY_ATTACHMENT", "true").lower() in {"true", "1", "yes", "on"}
 
     def _discord_max_attachment_bytes(self) -> int:
         """Return the per-attachment byte cap. 0 means unlimited.
