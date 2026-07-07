@@ -8206,43 +8206,16 @@ class GatewayRunner:
                     "VOICE_TOOLS_OPENAI_KEY",
                 )
                 if any(marker in message_text for marker in _stt_fail_markers):
-                    _stt_adapter = self.adapters.get(source.platform)
-                    _stt_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-                    if _stt_adapter:
-                        try:
-                            _stt_msg = (
-                                "🎤 I received your voice message but can't transcribe it — "
-                                "no speech-to-text provider is configured.\n\n"
-                                "To enable voice: install faster-whisper "
-                                "(`uv pip install faster-whisper` in the Hermes venv; "
-                                "`pip install faster-whisper` also works if pip is on PATH) "
-                                "and set `stt.enabled: true` in config.yaml, "
-                                "then /restart the gateway."
-                            )
-                            if self._has_setup_skill():
-                                _stt_msg += "\n\nFor full setup instructions, type: `/skill hermes-agent-setup`"
-                            await _stt_adapter.send(
-                                source.chat_id,
-                                _stt_msg,
-                                metadata=_stt_meta,
-                            )
-                        except Exception:
-                            pass
+                    logger.warning(
+                        "Voice transcription unavailable for %s; passing maintenance-safe note to agent",
+                        source.platform.value if source.platform else "?",
+                    )
 
         if audio_file_paths:
-            from tools.credential_files import to_agent_visible_cache_path as _to_agent_path
-            for _apath in audio_file_paths:
-                _basename = os.path.basename(_apath)
-                _parts = _basename.split("_", 2)
-                _display = _parts[2] if len(_parts) >= 3 else _basename
-                _display = re.sub(r'[^\w.\- ]', '_', _display)
-                _agent_path = _to_agent_path(_apath)
-                _note = (
-                    f"[The user sent an audio file attachment: '{_display}'. "
-                    f"It is saved at: {_agent_path}. "
-                    f"Ask the user what they'd like you to do with it, or pass the path to a transcription or media tool.]"
-                )
-                message_text = f"{_note}\n\n{message_text}"
+            message_text = await self._enrich_message_with_transcription(
+                message_text,
+                audio_file_paths,
+            )
 
         if event.media_urls and event.message_type == MessageType.DOCUMENT:
             import mimetypes as _mimetypes
@@ -14983,10 +14956,17 @@ class GatewayRunner:
                 duration_str = await _probe_audio_duration(abs_path)
                 if duration_str:
                     notes.append(
-                        f"[The user sent a voice message: {abs_path} (duration: {duration_str})]"
+                        f"[The user sent a voice/audio message: {abs_path} "
+                        f"(duration: {duration_str}), but STT is disabled. "
+                        "Do not ask the user to transcribe it. Treat this as a "
+                        "maintenance issue and use the report-maintenance path if available.]"
                     )
                 else:
-                    notes.append(f"[The user sent a voice message: {abs_path}]")
+                    notes.append(
+                        f"[The user sent a voice/audio message: {abs_path}, but STT is disabled. "
+                        "Do not ask the user to transcribe it. Treat this as a "
+                        "maintenance issue and use the report-maintenance path if available.]"
+                    )
             if not notes:
                 return user_text
             prefix = "\n\n".join(notes)
@@ -15017,29 +14997,26 @@ class GatewayRunner:
                         or error.startswith("Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set")
                     ):
                         _no_stt_note = (
-                            "[The user sent a voice message but I can't listen "
-                            "to it right now — no STT provider is configured. "
-                            "A direct message has already been sent to the user "
-                            "with setup instructions."
+                            "[The user sent a voice/audio message but it could not be "
+                            "transcribed because no STT provider is configured. "
+                            "Do not ask the user to transcribe it and do not mention "
+                            "provider setup details. Treat this as a maintenance issue "
+                            "and use the report-maintenance path if available."
                         )
-                        if self._has_setup_skill():
-                            _no_stt_note += (
-                                " You have a skill called hermes-agent-setup "
-                                "that can help users configure Hermes features "
-                                "including voice, tools, and more."
-                            )
                         _no_stt_note += "]"
                         enriched_parts.append(_no_stt_note)
                     else:
                         enriched_parts.append(
-                            "[The user sent a voice message but I had trouble "
-                            f"transcribing it~ ({error})]"
+                            "[The user sent a voice/audio message but transcription failed. "
+                            "Do not ask the user to transcribe it. Treat this as a "
+                            f"maintenance issue and use the report-maintenance path if available. ({error})]"
                         )
             except Exception as e:
                 logger.error("Transcription error: %s", e)
                 enriched_parts.append(
-                    "[The user sent a voice message but something went wrong "
-                    "when I tried to listen to it~ Let them know!]"
+                    "[The user sent a voice/audio message but transcription raised an internal error. "
+                    "Do not ask the user to transcribe it. Treat this as a maintenance issue "
+                    "and use the report-maintenance path if available.]"
                 )
 
         if enriched_parts:
